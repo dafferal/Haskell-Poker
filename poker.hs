@@ -174,9 +174,138 @@ highCard hand = HighCard $ reverse . sort $ ranks hand
 isOnePair :: [Card] -> Maybe HandRank
 isOnePair hand =
     let counts = rankCounts hand
-        pairs = [rank | (rank, count) <- counts, count == 2]
-        remaining = reverse . sort $ [rank | (rank, count) <- counts, count /= 2]
+        pairs = [rank | (rank, count) <- counts, count == 2] -- Check for pair
+        remaining = reverse . sort $ [rank | (rank, count) <- counts, count /= 2] -- Sort kickers
     in case pairs of
-        (p:_) -> Just (OnePair p remaining)
+        (p:_) -> Just (OnePair p remaining) -- If there is a pair, return OnePair
+        _     -> Nothing -- Else return Nothing
+
+isTwoPair :: [Card] -> Maybe HandRank
+isTwoPair hand =
+    let counts = rankCounts hand
+        pairs = reverse . sort $ [rank | (rank, count) <- counts, count == 2] -- Check for two pairs
+        remaining = reverse . sort $ [rank | (rank, count) <- counts, count == 1] -- Sort kickers
+    in case pairs of
+        (p1:p2:_) ->
+            let kicker = if not (null remaining) then head remaining else Two
+            in Just (TwoPair p1 p2 kicker) -- If there is two pairs, return TwoPair
+        _ -> Nothing -- If there are no pairs, return Nothing
+
+--Same as isTwoPair, except for three of a kind
+isThreeOfAKind :: [Card] -> Maybe HandRank
+isThreeOfAKind hand =
+    let counts = rankCounts hand
+        triplets = [rank | (rank, count) <- counts, count == 3]
+        remaining = reverse . sort $ [rank | (rank, count) <- counts, count /= 3]
+    in case triplets of
+        (r:_) -> Just (ThreeOfAKind r remaining)
         _     -> Nothing
 
+isStraight :: [Card] -> Maybe HandRank
+isStraight hand =
+    case straightValue hand of
+        Just highRank -> Just (Straight highRank)
+        Nothing -> Nothing
+
+-- Helper function to determine straights
+straightValue :: [Card] -> Maybe Rank
+straightValue hand =
+    let vs = map rankToValue (ranks hand)
+        vsWithAceLow = if Ace `elem` ranks hand then vs ++ [1] else vs -- If there is an Ace, add 1 to the list too
+        uniqueVs = reverse . sort . nub $ vsWithAceLow
+        sequences = [take 5 (drop n uniqueVs) | n <- [0..(length uniqueVs - 5)]]
+        validSequences = [seq | seq <- sequences, isConsecutive seq] -- If there are 5 consecutive numbers
+    in case validSequences of
+        (seq:_) -> Just (valueToRank (head seq)) -- Return the highest card from the hand
+        _       -> Nothing -- Else, return Nothing
+
+-- Check if a list of integers is consecutive
+isConsecutive :: [Int] -> Bool
+isConsecutive xs = and $ zipWith (\a b -> a - b == 1) xs (tail xs)
+
+isFlush :: [Card] -> Maybe HandRank
+isFlush hand =
+    let counts = suitCounts hand
+        flushSuits = [suit | (suit, count) <- counts, count >= 5] -- Find any suit that has 5 cards of the same suit
+    in case flushSuits of
+        (s:_) ->
+            let flushCards = [rank | (suit, rank) <- hand, suit == s]
+                sortedRanks = reverse . sort $ flushCards -- Sort ranks of flush
+            in Just (Flush sortedRanks)
+        _ -> Nothing -- If no flush, return Nothing
+
+isFullHouse :: [Card] -> Maybe HandRank
+isFullHouse hand =
+    let counts = rankCounts hand
+        threes = [rank | (rank, count) <- counts, count == 3] -- Look for any three of a kinds
+        pairs  = [rank | (rank, count) <- counts, count == 2] -- Look for pairs
+    in case (threes, pairs) of
+        ((t:_), (p:_)) -> Just (FullHouse t p) -- If it's found, return FullHouse
+        ((t:_), _)     -> -- If not pairs are found:
+            -- Check for another three of a kind to act as a pair
+            let remainingThrees = [rank | (rank, count) <- counts, count == 3, rank /= t]
+            in case remainingThrees of
+                (p:_) -> Just (FullHouse t p)
+                _     -> Nothing
+        _ -> Nothing -- if no full house, return Nothing
+
+-- Same as isThreeOfAKind, except checking for 4 counts
+isFourOfAKind :: [Card] -> Maybe HandRank
+isFourOfAKind hand =
+    let counts = rankCounts hand
+        quads = [rank | (rank, count) <- counts, count == 4]
+        remaining = [rank | (rank, count) <- counts, count /= 4]
+    in case quads of
+        (r:_) -> Just (FourOfAKind r (maximum remaining))
+        _     -> Nothing
+
+isStraightFlush :: [Card] -> Maybe HandRank
+isStraightFlush hand =
+    case isFlush hand of
+        Just (Flush sortedRanks) ->
+            -- Using isFlush, if there is a flush then check if there is a straight too
+            let counts = suitCounts hand
+                flushSuits = [suit | (suit, count) <- counts, count >= 5]
+            in case flushSuits of
+                (s:_) ->
+                    -- Now that we have the flush suit, extract all cards of that suit
+                    let flushCards = filter (\(su, _) -> su == s) hand
+                    in case straightValue flushCards of -- We do not need to sort, since isFlush already has
+                        Just highRank -> Just (StraightFlush highRank)
+                        Nothing -> Nothing
+                _ -> Nothing -- If there is no straight, return Nothing
+        Nothing -> Nothing -- If there was no flush to begin with, return Nothing
+
+isRoyalFlush :: [Card] -> Maybe HandRank
+isRoyalFlush hand =
+    case isStraightFlush hand of
+        Just (StraightFlush rank) ->
+            if rank == Ace then Just RoyalFlush else Nothing -- Check if its a straight flush, 
+                                                             -- if it's highest card is an Ace, 
+                                                             -- then it is a royal flush
+        _ -> Nothing
+
+-- Finally, the evaluateHand function, goes through each in order of strength
+evaluateHand :: [Card] -> HandRank
+evaluateHand hand =
+    case isRoyalFlush hand of
+        Just hr -> hr
+        Nothing -> case isStraightFlush hand of
+            Just hr -> hr
+            Nothing -> case isFourOfAKind hand of
+                Just hr -> hr
+                Nothing -> case isFullHouse hand of
+                    Just hr -> hr
+                    Nothing -> case isFlush hand of
+                        Just hr -> hr
+                        Nothing -> case isStraight hand of
+                            Just hr -> hr
+                            Nothing -> case isThreeOfAKind hand of
+                                Just hr -> hr
+                                Nothing -> case isTwoPair hand of
+                                    Just hr -> hr
+                                    Nothing -> case isOnePair hand of
+                                        Just hr -> hr
+                                        Nothing -> highCard hand
+
+                    
