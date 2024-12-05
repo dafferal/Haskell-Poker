@@ -1,4 +1,4 @@
-import Data.List (sort, group, sortBy, nub)
+import Data.List (sort, group, sortBy, nub, subsequences)
 import Data.Ord (comparing)
 import Data.Function (on)
 import System.Random
@@ -308,4 +308,21 @@ evaluateHand hand =
                                         Just hr -> hr
                                         Nothing -> highCard hand
 
-                    
+getPlayerBestHand :: Player -> [Card] -> HandRank
+getPlayerBestHand player community =
+    let cards = hand player ++ community
+        fiveCardCombos = filter (\x -> length x == 5) (subsequences cards)
+        handRanks = map evaluateHand fiveCardCombos
+    in maximum handRanks
+
+-- Determine the winner (given a list of player names and hand ranks)
+-- Returns a list of player names
+-- If there is a tie, returns multiple names
+determineWinner :: [(String, HandRank)] -> [String]
+determineWinner playerHandRanks
+    | null playerHandRanks = []
+    | otherwise =
+        let bestRank = maximum (map snd playerHandRanks)
+            winners = [pName | (pName, rank) <- playerHandRanks, rank == bestRank]
+        in winners
+
