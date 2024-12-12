@@ -3,6 +3,7 @@
 {-# HLINT ignore "Replace case with fromMaybe" #-}
 {-# HLINT ignore "Redundant if" #-}
 {-# HLINT ignore "Use null" #-}
+{-# HLINT ignore "Use zipWith" #-}
 import Data.List (sort, group, nub, subsequences)
 import System.Random ( randomRIO )
 
@@ -49,7 +50,6 @@ data Player = Player {
     playerName :: String,
     hand       :: [Card],
     chips      :: Int,
-    isDealer   :: Bool,
     strategy   :: Strategy
 } deriving (Show, Eq)
 
@@ -377,7 +377,7 @@ decideAction player highestBet betsList = do
                then
                  return Fold -- Cannot call since not enough chips
                else do
-                    actionChoice <- randomRIO (1 :: Int, 2)
+                    actionChoice <- randomRIO (1 :: Int, 3)
                     case actionChoice of
                      1 -> return Fold
                      _ -> return Call
@@ -403,7 +403,7 @@ decideAction player highestBet betsList = do
                         raiseAmount <- randomRIO (1 :: Int, pChips)
                         return (Raise raiseAmount)
                      _ -> return (Raise 1)
-        
+
         RandomStrategy -> do
             if (highestBet - currentBet) > pChips
                then
@@ -425,11 +425,11 @@ bettingRound state
     | players state == [] = return state -- Base case: No players left to process
     | noMoreRaisesNeeded state = return state -- Base case: No more raises are needed
     | otherwise = do
-        let currentBets = bets state
-            currentName = playerName player
-            currentPlayers = players state
-            highestBet = currentHighestBet currentBets
+        let currentPlayers = players state
             (player:remainingPlayers) = currentPlayers
+            currentBets = bets state
+            currentName = playerName player
+            highestBet = currentHighestBet currentBets
 
         -- Skip the player if they have already folded
         if player `notElem` currentPlayers
@@ -459,3 +459,104 @@ bettingRound state
 
             -- Recursive call with updated state and remaining players
             bettingRound updatedState { players = remainingPlayers }
+
+-- Sets the positions for the dealer and blind players
+-- Works like a circular table
+setPositions :: GameState -> GameState
+setPositions givenState =
+    let numPlayers = length (players givenState)
+        newDealer = (dealerPosition givenState + 1) `mod` numPlayers
+        newSB = (newDealer + 1) `mod` numPlayers
+        newBB = (newDealer + 2) `mod` numPlayers
+    in givenState { dealerPosition = newDealer, smallBlindPosition = newSB, bigBlindPosition = newBB }
+
+-- Updates the big and small blind players chips
+updatePlayerChipsByIndex :: [Player] -> Int -> Int -> Int -> [Player]
+updatePlayerChipsByIndex [] _ _ _ = [] -- The base case
+updatePlayerChipsByIndex (x:xs) sbIndex bbIndex currentIndex
+    | currentIndex == sbIndex = (x { chips = chips x - 1 }) : updatePlayerChipsByIndex xs sbIndex bbIndex (currentIndex + 1)
+    | currentIndex == bbIndex = (x { chips = chips x - 2 }) : updatePlayerChipsByIndex xs sbIndex bbIndex (currentIndex + 1)
+    | otherwise               = x : updatePlayerChipsByIndex xs sbIndex bbIndex (currentIndex + 1)
+
+-- Deduct blinds from the big blind and small blind players
+deductBlinds :: GameState -> GameState
+deductBlinds givenState
+    | null (players givenState) = givenState
+    | otherwise =
+        let ps = players givenState
+            sbIndex = smallBlindPosition givenState
+            bbIndex = bigBlindPosition givenState
+            smallBlindPlayer = ps !! sbIndex
+            bigBlindPlayer  = ps !! bbIndex
+
+            sbChips = chips smallBlindPlayer - 1
+            bbChips = chips bigBlindPlayer - 2
+
+            updatedPlayers = updatePlayerChipsByIndex (players givenState) sbIndex bbIndex 0
+
+            updatedPot = pot givenState + 3
+            updatedBets = (playerName smallBlindPlayer, 1) : (playerName bigBlindPlayer, 2) : bets givenState
+        in givenState { players = updatedPlayers, pot = updatedPot, bets = updatedBets }
+
+gameLoop :: GameState -> Int -> IO GameState
+gameLoop currentState currentRound =
+    if currentRound > 100 || length (players currentState) == 1
+        then return currentState
+    else do
+        putStrLn ("Round " ++ show currentRound ++ " starting")
+        shuffledDeck <- shuffleDeck buildDeck
+        let shuffledDeckState = currentState {deck = shuffledDeck}
+            updatedState = setPositions shuffledDeckState
+            deductedBlindsState = deductBlinds updatedState
+            dealtHoleCardsState = dealCards DealHoleCards deductedBlindsState
+
+        preFlopState <- bettingRound dealtHoleCardsState
+        let preFlopCardsState = dealCards (DealCommunityCards 3) preFlopState
+
+        flopState <- bettingRound preFlopCardsState
+        let flopCardsState = dealCards (DealCommunityCards 1) flopState
+
+        riverState <- bettingRound flopCardsState
+        let riverCardsState = dealCards (DealCommunityCards 1) riverState
+
+        let playerHands = [(playerName p, getPlayerBestHand p (communityCards riverCardsState)) | p <- players riverCardsState]
+            winners = determineWinner playerHands
+            losers = [p | p <- players riverCardsState, playerName p `notElem` winners]
+
+        print playerHands
+        print winners
+
+        -- Deduct chips from losers
+        let updatedLosers = map (\p -> p { chips = chips p - (pot riverCardsState `div` length losers) }) losers
+
+        -- Redistribute the pot to winners
+        let updatedWinners = [(\ p
+                                 -> p {chips = chips p
+                                                 + (pot riverCardsState `div` length winners)})
+                                p |
+                                p <- players riverCardsState, playerName p `elem` winners]
+
+        -- Combine winners and losers
+        let updatedPlayers = filter (\p -> chips p > 0) (updatedWinners ++ updatedLosers)
+
+        let finalGameState = riverCardsState { players = updatedPlayers, pot = 0 }
+
+        gameLoop finalGameState (currentRound + 1)
+
+main :: IO()
+main = do
+    let initPlayers = [Player "Shams" [] 1000 RandomStrategy, Player "Idiot" [] 1000 AggressivePlayer]
+    let initialState = GameState {
+        players = initPlayers,
+        deck = [],
+        communityCards = [],
+        pot = 0,
+        bets = [],
+        dealerPosition = 0,
+        smallBlindPosition = -1,
+        bigBlindPosition = -1
+    }
+
+    finalState <- gameLoop initialState 0
+    print finalState
+    
