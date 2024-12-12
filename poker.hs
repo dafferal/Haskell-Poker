@@ -71,7 +71,7 @@ shuffleDeck :: Deck -> IO Deck
 shuffleDeck [] = return []
 shuffleDeck xs = do
     randIndex <- randomRIO (0, length xs - 1)
-    let 
+    let
         remainingDeck = take randIndex xs ++ drop (randIndex + 1) xs -- Selecting random index within given Deck
     shuffledDeck <- shuffleDeck remainingDeck -- Recursively shuffle deck
     return (xs !! randIndex : shuffledDeck)
@@ -85,14 +85,14 @@ dealCards :: DealType -> GameState -> GameState
 dealCards dealType gameState =
     case dealType of
         DealHoleCards ->
-            let 
+            let
                 (updatedPlayers, newDeck) = dealToPlayers (players gameState) (deck gameState)
-            in 
+            in
                 gameState { players = updatedPlayers, deck = newDeck }
         DealCommunityCards numCards -> -- Deals cards depending on input
-            let 
+            let
                 (cardsDealt, newDeck) = splitAt numCards (deck gameState)
-            in 
+            in
                 gameState { communityCards = communityCards gameState ++ cardsDealt, deck = newDeck }
 
 -- Helper function to deal two cards to each player
@@ -322,13 +322,23 @@ getPlayerBet :: String -> [(String, Int)] -> Int
 getPlayerBet pName betsList =
     case lookup pName betsList of
         Nothing -> 0
-        Just a -> a
+        Just a  -> a
 
 -- Update a players bet using their name
 -- If they aren't found, don't change 
 updatePlayerBet :: String -> Int -> [(String, Int)] -> [(String, Int)]
-updatePlayerBet pName newBet =
-    map (\(n, b) -> if n == pName then (n, newBet) else (n, b))
+updatePlayerBet _ _ [] = []
+updatePlayerBet pName newBet ((n, b):xs)
+  | n == pName = (n, newBet) : updatePlayerBet pName newBet xs
+  | otherwise  = (n, b) : updatePlayerBet pName newBet xs
+
+-- Update a players chips using their name
+-- If they aren't found, dont alter chips
+updatePlayerChips :: String -> Int -> [Player] -> [Player]
+updatePlayerChips _ _ [] = []
+updatePlayerChips pName amountToCall (p:ps)
+  | playerName p == pName = p { chips = chips p - amountToCall } : updatePlayerChips pName amountToCall ps
+  | otherwise             = p : updatePlayerChips pName amountToCall ps
 
 -- Find the highest bet between the players
 -- If there aren't any, use 0
@@ -352,7 +362,7 @@ noMoreRaisesNeeded state =
         [] -> True
         (p:ps) ->
             if getPlayerBet (playerName p) (bets state) /= currentHighestBet (bets state)
-            then False
+                then False
             else noMoreRaisesNeeded state { players = ps }
 
 decideAction :: Player -> Int -> [(String, Int)] -> IO Action
@@ -385,41 +395,37 @@ bettingRound state
     | players state == [] = return state -- Base case: No players left to process
     | noMoreRaisesNeeded state = return state -- Base case: No more raises are needed
     | otherwise = do
-        let highestBet = currentHighestBet (bets state)
-        let (player:remainingPlayers) = players state
+        let currentBets = bets state
+            currentName = playerName player
+            currentPlayers = players state
+            highestBet = currentHighestBet currentBets
+            (player:remainingPlayers) = currentPlayers
 
         -- Skip the player if they have already folded
-        if player `notElem` players state
+        if player `notElem` currentPlayers
             then bettingRound state { players = remainingPlayers }
         else do
-            let chipsLeft = chips player
-                amountToCall = highestBet - getPlayerBet (playerName player) (bets state)
+            let amountToCall = highestBet - getPlayerBet currentName currentBets
 
             -- Decide the player's action
-            action <- decideAction player highestBet (bets state)
+            action <- decideAction player highestBet currentBets
             updatedState <- case action of
                 Fold -> do
-                    return state { players = removePlayer (playerName player) (players state) }
+                    return state { players = removePlayer currentName currentPlayers }
 
                 Call -> do
                     -- Update the player's bet and reduce their chips
-                    let updatedBets = updatePlayerBet (playerName player) highestBet (bets state)
-                        updatedPlayers = map (\p -> if playerName p == playerName player
-                                                    then p { chips = chipsLeft - amountToCall }
-                                                    else p) (players state)
-                    return state { bets = updatedBets, players = updatedPlayers }
+                    return state { bets = updatePlayerBet currentName highestBet currentBets,
+                        players = updatePlayerChips currentName amountToCall currentPlayers }
 
                 Raise amount -> do
                     -- Ensure the player has enough chips to raise
-                    if amount > chipsLeft
+                    if amount > chips player
                         then return state
                         else do
-                            let updatedBets = updatePlayerBet (playerName player) (highestBet + amount) (bets state)
-                                updatedPlayers = map (\p -> if playerName p == playerName player
-                                                            then p { chips = chipsLeft - (amountToCall + amount) }
-                                                            else p) (players state)
-                                updatedPot = pot state + amountToCall + amount
-                            return state { bets = updatedBets, players = updatedPlayers, pot = updatedPot }
+                            return state { bets = updatePlayerBet currentName (highestBet + amount) currentBets,
+                                players = updatePlayerChips currentName amountToCall currentPlayers,
+                                pot = pot state + amountToCall + amount }
 
             -- Recursive call with updated state and remaining players
             bettingRound updatedState { players = remainingPlayers }
