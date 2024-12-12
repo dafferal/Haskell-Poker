@@ -41,8 +41,9 @@ suits hand = [suit | (suit, _) <- hand]
 
 -- Defining the Player data type
 data Strategy = RandomStrategy
-    | PlaceholderStrategy
-    deriving (Show, Eq)
+    | PassivePlayer
+    | AggressivePlayer
+        deriving (Show, Eq)
 
 data Player = Player {
     playerName :: String,
@@ -371,9 +372,38 @@ decideAction player highestBet betsList = do
         currentBet = getPlayerBet (playerName player) betsList
 
     case strategy player of
-        PlaceholderStrategy ->
-            return (if (highestBet - currentBet) <= pChips then Call else Fold)
+        PassivePlayer -> do
+            if (highestBet - currentBet) > pChips
+               then
+                 return Fold -- Cannot call since not enough chips
+               else do
+                    actionChoice <- randomRIO (1 :: Int, 2)
+                    case actionChoice of
+                     1 -> return Fold
+                     _ -> return Call
 
+        AggressivePlayer -> do
+            if (highestBet - currentBet) > pChips
+               then
+                 return Fold -- Cannot call since not enough chips
+               else do
+                    actionChoice <- randomRIO (1 :: Int, 6)
+                    case actionChoice of
+                     1 -> return Call
+                     2 -> do
+                        raiseAmount <- randomRIO (1 :: Int, pChips)
+                        return (Raise raiseAmount)
+                     3 -> do
+                        raiseAmount <- randomRIO (1 :: Int, pChips)
+                        return (Raise raiseAmount)
+                     4 -> do
+                        raiseAmount <- randomRIO (1 :: Int, pChips)
+                        return (Raise raiseAmount)
+                     5 -> do
+                        raiseAmount <- randomRIO (1 :: Int, pChips)
+                        return (Raise raiseAmount)
+                     _ -> return (Raise 1)
+        
         RandomStrategy -> do
             if (highestBet - currentBet) > pChips
                then
