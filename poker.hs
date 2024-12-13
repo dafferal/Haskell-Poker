@@ -50,7 +50,9 @@ data Player = Player {
     playerName :: String,
     hand       :: [Card],
     chips      :: Int,
-    strategy   :: Strategy
+    strategy   :: Strategy,
+    isDealer   :: Bool,
+    folded     :: Bool
 } deriving (Show, Eq)
 
 -- Defining the GameState data type
@@ -316,14 +318,16 @@ determineWinner playerHandRanks
 data Action = Fold
     | Call
     | Raise Int
+    | Check
+    deriving(Show)
 
 -- Return how much the player has currently bet with a given name
 -- If they aren't found, return 0
 getPlayerBet :: String -> [(String, Int)] -> Int
-getPlayerBet pName betsList =
-    case lookup pName betsList of
-        Nothing -> 0
-        Just a  -> a
+getPlayerBet _ [] = 0
+getPlayerBet pName ((name, bet):xs)
+    | pName == name = bet
+    | otherwise     = getPlayerBet pName xs
 
 -- Update a players bet using their name
 -- If they aren't found, don't change 
@@ -349,13 +353,6 @@ currentHighestBet betsList =
         then 0
     else maximum [bet | (_, bet) <- betsList]
 
--- Remove a player (used when they fold)
-removePlayer :: String -> [Player] -> [Player]
-removePlayer _ [] = []
-removePlayer pName (p:ps)
-    | playerName p == pName = removePlayer pName ps
-    | otherwise             = p : removePlayer pName ps
-
 -- Used to check if any player needs to bet anymore
 noMoreRaisesNeeded :: GameState -> Bool
 noMoreRaisesNeeded state =
@@ -370,95 +367,97 @@ decideAction :: Player -> Int -> [(String, Int)] -> IO Action
 decideAction player highestBet betsList = do
     let pChips = chips player
         currentBet = getPlayerBet (playerName player) betsList
+        amountToCall = highestBet
 
     case strategy player of
         PassivePlayer -> do
-            if (highestBet - currentBet) > pChips
-               then
-                 return Fold -- Cannot call since not enough chips
-               else do
-                    actionChoice <- randomRIO (1 :: Int, 3)
-                    case actionChoice of
-                     1 -> return Fold
-                     _ -> return Call
+            if amountToCall > pChips
+                then return Fold -- Cannot call since not enough chips
+            else do
+                actionChoice <- randomRIO (1 :: Int, 3)
+                case actionChoice of
+                    1 -> return Call
+                    _ -> return Fold
 
         AggressivePlayer -> do
-            if (highestBet - currentBet) > pChips
-               then
-                 return Fold -- Cannot call since not enough chips
-               else do
-                    actionChoice <- randomRIO (1 :: Int, 6)
-                    case actionChoice of
-                     1 -> return Call
-                     2 -> do
-                        raiseAmount <- randomRIO (1 :: Int, pChips)
+            if amountToCall > pChips
+                then do
+                    return Fold -- Cannot call since not enough chips
+            else do
+                actionChoice <- randomRIO (1 :: Int, 8)
+                case actionChoice of
+                    1 -> do
+                        return Call
+                    2 -> do
+                        raiseAmount <- randomRIO (1 :: Int, pChips - highestBet)
                         return (Raise raiseAmount)
-                     3 -> do
-                        raiseAmount <- randomRIO (1 :: Int, pChips)
+                    3 -> do
+                        raiseAmount <- randomRIO (1 :: Int, pChips - highestBet)
                         return (Raise raiseAmount)
-                     4 -> do
-                        raiseAmount <- randomRIO (1 :: Int, pChips)
+                    4 -> do
+                        raiseAmount <- randomRIO (1 :: Int, pChips - highestBet)
                         return (Raise raiseAmount)
-                     5 -> do
-                        raiseAmount <- randomRIO (1 :: Int, pChips)
+                    5 -> do
+                        raiseAmount <- randomRIO (1 :: Int, pChips - highestBet)
                         return (Raise raiseAmount)
-                     _ -> return (Raise 1)
+                    _ -> do
+                        if currentBet == highestBet then return Check else return Call
 
         RandomStrategy -> do
-            if (highestBet - currentBet) > pChips
+            if amountToCall > pChips
                then
                  return Fold -- Cannot call since not enough chips
                else do
                  actionChoice <- randomRIO (1 :: Int, 6)
                  case actionChoice of
-                     1 -> return Fold
+                     1 -> return Call
                      2 -> return Call
                      3 -> return Call
                      4 -> return Call
                      5 -> do
-                        raiseAmount <- randomRIO (1 :: Int, pChips)
+                        raiseAmount <- randomRIO (1 :: Int, pChips - amountToCall)
                         return (Raise raiseAmount)
                      _ -> return (Raise 1)
 
 bettingRound :: GameState -> IO GameState
 bettingRound state
-    | players state == [] = return state -- Base case: No players left to process
-    | noMoreRaisesNeeded state = return state -- Base case: No more raises are needed
+    | noMoreRaisesNeeded state = return state
+    | length (filter (not . folded) (players state)) == 1 = return state
     | otherwise = do
         let currentPlayers = players state
-            (player:remainingPlayers) = currentPlayers
-            currentBets = bets state
-            currentName = playerName player
-            highestBet = currentHighestBet currentBets
+        let player = head currentPlayers
+        let currentBets = bets state
+        let currentName = playerName player
+        let highestBet = currentHighestBet currentBets
+        let currentPlayerBet = getPlayerBet currentName currentBets
 
-        -- Skip the player if they have already folded
-        if player `notElem` currentPlayers
-            then bettingRound state { players = remainingPlayers }
+        if folded player
+            then
+                -- If player is folded, just move to the next player in the list
+                if all folded (players state)
+                    then return state
+                else bettingRound state
         else do
-            let amountToCall = highestBet - getPlayerBet currentName currentBets
-
-            -- Decide the player's action
+            let amountToCall = highestBet
             action <- decideAction player highestBet currentBets
-            updatedState <- case action of
+            case action of
                 Fold -> do
-                    return state { players = removePlayer currentName currentPlayers }
-
+                    let updatedPlayers = map (\p -> if playerName p == currentName then p { folded = True } else p) currentPlayers
+                    return state { players = updatedPlayers }
+                Check -> do
+                    return state
                 Call -> do
-                    -- Update the player's bet and reduce their chips
-                    return state { bets = updatePlayerBet currentName highestBet currentBets,
-                        players = updatePlayerChips currentName amountToCall currentPlayers }
+                    let newBets = updatePlayerBet currentName highestBet currentBets
+                        newPlayers = updatePlayerChips currentName amountToCall currentPlayers
+                        newPot = pot state + amountToCall
+                    return state { bets = newBets, players = newPlayers, pot = newPot}
 
-                Raise amount -> do
-                    -- Ensure the player has enough chips to raise
-                    if amount > chips player
-                        then return state
-                        else do
-                            return state { bets = updatePlayerBet currentName (highestBet + amount) currentBets,
-                                players = updatePlayerChips currentName amountToCall currentPlayers,
-                                pot = pot state + amountToCall + amount }
-
-            -- Recursive call with updated state and remaining players
-            bettingRound updatedState { players = remainingPlayers }
+                Raise amt -> do
+                    let totalCost = amountToCall + amt
+                        newBets = updatePlayerBet currentName totalCost currentBets
+                        newPlayers = updatePlayerChips currentName totalCost currentPlayers
+                        newPot = pot state + totalCost
+                    return state { bets = newBets, players = newPlayers, pot = newPot }
 
 -- Sets the positions for the dealer and blind players
 -- Works like a circular table
@@ -466,17 +465,9 @@ setPositions :: GameState -> GameState
 setPositions givenState =
     let numPlayers = length (players givenState)
         newDealer = (dealerPosition givenState + 1) `mod` numPlayers
-        newSB = (newDealer + 1) `mod` numPlayers
-        newBB = (newDealer + 2) `mod` numPlayers
+        newSB = if numPlayers == 2 then newDealer else (newDealer + 1) `mod` numPlayers
+        newBB = if numPlayers == 2 then (newDealer + 1) `mod` numPlayers else (newDealer + 2) `mod` numPlayers
     in givenState { dealerPosition = newDealer, smallBlindPosition = newSB, bigBlindPosition = newBB }
-
--- Updates the big and small blind players chips
-updatePlayerChipsByIndex :: [Player] -> Int -> Int -> Int -> [Player]
-updatePlayerChipsByIndex [] _ _ _ = [] -- The base case
-updatePlayerChipsByIndex (x:xs) sbIndex bbIndex currentIndex
-    | currentIndex == sbIndex = (x { chips = chips x - 1 }) : updatePlayerChipsByIndex xs sbIndex bbIndex (currentIndex + 1)
-    | currentIndex == bbIndex = (x { chips = chips x - 2 }) : updatePlayerChipsByIndex xs sbIndex bbIndex (currentIndex + 1)
-    | otherwise               = x : updatePlayerChipsByIndex xs sbIndex bbIndex (currentIndex + 1)
 
 -- Deduct blinds from the big blind and small blind players
 deductBlinds :: GameState -> GameState
@@ -486,77 +477,90 @@ deductBlinds givenState
         let ps = players givenState
             sbIndex = smallBlindPosition givenState
             bbIndex = bigBlindPosition givenState
-            smallBlindPlayer = ps !! sbIndex
-            bigBlindPlayer  = ps !! bbIndex
 
-            sbChips = chips smallBlindPlayer - 1
-            bbChips = chips bigBlindPlayer - 2
-
-            updatedPlayers = updatePlayerChipsByIndex (players givenState) sbIndex bbIndex 0
+            updatedPlayers = zipWith (\p i -> if i == sbIndex then p { chips = chips p - 1 }
+                                                else if i == bbIndex
+                                                    then p { chips = chips p - 2 }
+                                                    else p) ps [0..]
 
             updatedPot = pot givenState + 3
-            updatedBets = (playerName smallBlindPlayer, 1) : (playerName bigBlindPlayer, 2) : bets givenState
+            updatedBets = (playerName (ps !! sbIndex), 1) : (playerName (ps !! bbIndex), 2) : bets givenState
         in givenState { players = updatedPlayers, pot = updatedPot, bets = updatedBets }
+
+updatePlayersAfterHoleCardsState :: GameState -> GameState
+updatePlayersAfterHoleCardsState givenState =
+    let updatedPlayers = zipWith (\i p -> if i == dealerPosition givenState then p { isDealer = True } else p { isDealer = False }) [0..] (players givenState)
+        startIndex = (bigBlindPosition givenState + 1) `mod` length updatedPlayers
+    in givenState { players = drop startIndex updatedPlayers ++ take startIndex updatedPlayers }
+
+updatePlayersAfterPreFlop :: GameState -> GameState
+updatePlayersAfterPreFlop givenState =
+    let startIndex = smallBlindPosition givenState
+        givenPlayers = players givenState
+    in  givenState { players = drop startIndex givenPlayers ++ take startIndex givenPlayers }
 
 gameLoop :: GameState -> Int -> IO GameState
 gameLoop currentState currentRound =
     if currentRound > 100 || length (players currentState) == 1
         then return currentState
     else do
-        putStrLn ("Round " ++ show currentRound ++ " starting")
+        putStrLn ("Round " ++ show currentRound ++ " starting" ++ "\n")
         shuffledDeck <- shuffleDeck buildDeck
         let shuffledDeckState = currentState {deck = shuffledDeck}
-            updatedState = setPositions shuffledDeckState
-            deductedBlindsState = deductBlinds updatedState
-            dealtHoleCardsState = dealCards DealHoleCards deductedBlindsState
+        let updatedState = setPositions shuffledDeckState
+        let deductedBlindsState = deductBlinds updatedState
+        let dealtHoleCardsState = dealCards DealHoleCards deductedBlindsState
+        let currentDealerPosition = dealerPosition dealtHoleCardsState
 
-        preFlopState <- bettingRound dealtHoleCardsState
+        preFlopState <- bettingRound (updatePlayersAfterHoleCardsState dealtHoleCardsState)
         let preFlopCardsState = dealCards (DealCommunityCards 3) preFlopState
 
-        flopState <- bettingRound preFlopCardsState
+        flopState <- bettingRound (updatePlayersAfterPreFlop preFlopCardsState)
         let flopCardsState = dealCards (DealCommunityCards 1) flopState
 
-        riverState <- bettingRound flopCardsState
+        riverState <- bettingRound (updatePlayersAfterPreFlop flopCardsState )
         let riverCardsState = dealCards (DealCommunityCards 1) riverState
 
-        let playerHands = [(playerName p, getPlayerBestHand p (communityCards riverCardsState)) | p <- players riverCardsState]
-            winners = determineWinner playerHands
-            losers = [p | p <- players riverCardsState, playerName p `notElem` winners]
+        let notFolded = filter (not . folded) (players riverCardsState)
+        let playerHands = [(playerName p, getPlayerBestHand p (communityCards riverCardsState)) | p <- notFolded]
+        let winners = case notFolded of
+                [singlePlayer] ->
+                    [playerName singlePlayer]
+                _ ->
+                    determineWinner playerHands
 
-        print playerHands
-        print winners
+        let losers = [p | p <- players riverCardsState, playerName p `notElem` winners]
 
-        -- Deduct chips from losers
-        let updatedLosers = map (\p -> p { chips = chips p - (pot riverCardsState `div` length losers) }) losers
-
-        -- Redistribute the pot to winners
-        let updatedWinners = [(\ p
-                                 -> p {chips = chips p
-                                                 + (pot riverCardsState `div` length winners)})
-                                p |
-                                p <- players riverCardsState, playerName p `elem` winners]
+        -- Redistribute the pot to winners, making sure to check if there are any remainders
+        -- If there are any remainders from division, add them back
+        let updatedWinners =
+                [ p { chips = chips p + (pot riverCardsState `div` length winners) + extraChip }
+                | (p, index) <- zip (filter (\p -> playerName p `elem` winners) (players riverCardsState)) [0..]
+                , let extraChip = if index < (pot riverCardsState `mod` length winners) then 1 else 0
+                ]
 
         -- Combine winners and losers
-        let updatedPlayers = filter (\p -> chips p > 0) (updatedWinners ++ updatedLosers)
+        let updatedPlayers = filter (\p -> chips p > 0) (updatedWinners ++ losers)
 
-        let finalGameState = riverCardsState { players = updatedPlayers, pot = 0 }
+        let resetPlayers = map (\p -> p { folded = False, hand =[] }) updatedPlayers
+        let finalGameState = riverCardsState { players = resetPlayers, pot = 0, bets = [], communityCards = []}
 
+        putStrLn $ "End of Round " ++ show currentRound
         gameLoop finalGameState (currentRound + 1)
 
 main :: IO()
 main = do
-    let initPlayers = [Player "Shams" [] 1000 RandomStrategy, Player "Idiot" [] 1000 AggressivePlayer]
+    let initPlayers = [Player "Shams" [] 1000 AggressivePlayer False False, Player "Idiot" [] 1000 AggressivePlayer False False]
     let initialState = GameState {
         players = initPlayers,
         deck = [],
         communityCards = [],
         pot = 0,
         bets = [],
-        dealerPosition = 0,
+        dealerPosition = -1,
         smallBlindPosition = -1,
         bigBlindPosition = -1
     }
 
-    finalState <- gameLoop initialState 0
-    print finalState
-    
+    finalState <- gameLoop initialState 1
+    print ("And the winner(s) are: " ++ show (players finalState))
