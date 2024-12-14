@@ -6,6 +6,7 @@
 {-# HLINT ignore "Use zipWith" #-}
 import Data.List (sort, group, nub, subsequences)
 import System.Random ( randomRIO )
+import System.Exit (exitSuccess)
 
 -- Defining the datatypes for Deck
 data Suit 
@@ -567,8 +568,10 @@ We then check for the winners using the determineWinners function, redistribute 
 Remove any players that have run out of chips, reinitalise the GameState and run the gameLoop again.-}
 gameLoop :: GameState -> Int -> IO GameState
 gameLoop currentState currentRound =
-    if currentRound > 100 || length (players currentState) == 1
-        then return currentState
+    if length (players currentState) == 1
+        then do
+            putStrLn ("And the winner(s) are: " ++ unwords [playerName player | player <- players currentState])
+            return currentState
     else do
         putStrLn ("Round " ++ show currentRound ++ " starting" ++ "\n")
         shuffledDeck <- shuffleDeck buildDeck
@@ -577,23 +580,20 @@ gameLoop currentState currentRound =
         let deductedBlindsState = deductBlinds updatedState
         let dealtHoleCardsState = dealCards DealHoleCards deductedBlindsState
         let playersAndCards = [(playerName x, hand x) | x <- players dealtHoleCardsState]
-        putStrLn ("dealtHoleCardsState: " ++ show dealtHoleCardsState ++ "\n") 
+        let isFinalLoop = currentRound + 1 == 101
         putStrLn ("Players hand: " ++ show playersAndCards ++ "\n") 
 
         flopState <- bettingRound (setPositionsFromDealer (updatePlayersAfterHoleCardsState dealtHoleCardsState))
         let flopCardsState = dealCards (DealCommunityCards 3) flopState
         putStrLn ("Flop: " ++ show (communityCards flopCardsState) ++ "\n" )
-        putStrLn ("FlopState: " ++ show flopCardsState ++ "\n" )
 
         turnState <- bettingRound (setPositionsFromDealer (updatePlayersAfterFlop flopCardsState))
         let turnCardsState = dealCards (DealCommunityCards 1) turnState
         putStrLn ("Turn: " ++ show (communityCards turnCardsState) ++ "\n" )
-        putStrLn ("TurnState: " ++ show turnCardsState ++ "\n" )
 
         riverState <- bettingRound (setPositionsFromDealer (updatePlayersAfterFlop turnCardsState))
         let riverCardsState = dealCards (DealCommunityCards 1) riverState
         putStrLn ("River: " ++ show (communityCards riverCardsState) ++ "\n" )
-        putStrLn ("RiverState: " ++ show riverCardsState ++ "\n" )
 
         let notFolded = filter (not . folded) (players riverCardsState)
         let playerHands = [(playerName x, getPlayerBestHand x (communityCards riverCardsState)) | x <- notFolded]
@@ -627,7 +627,14 @@ gameLoop currentState currentRound =
         let finalGameState = riverCardsState { players = resetPlayers, pot = 0, communityCards = []}
 
         putStrLn ("End of Round " ++ show currentRound ++ "\n")
-        gameLoop finalGameState (currentRound + 1)
+
+        if isFinalLoop
+            then do
+                putStrLn "Game reached 100 rounds, no winners"
+                return finalGameState
+        else do
+            gameLoop finalGameState (currentRound + 1)
+
 
 {- Used to run a test scenario of 4 players with 1000 chips, 
 and their respective strategies. -}
@@ -650,5 +657,4 @@ main = do
     }
 
     finalState <- gameLoop initialState 1
-    print ("And the gameState is: " ++ show finalState)
-    print ("And the winner(s) are: " ++ unwords [playerName player | player <- players finalState])
+    exitSuccess
