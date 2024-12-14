@@ -1,9 +1,3 @@
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-{-# HLINT ignore "Avoid reverse" #-}
-{-# HLINT ignore "Replace case with fromMaybe" #-}
-{-# HLINT ignore "Redundant if" #-}
-{-# HLINT ignore "Use null" #-}
-{-# HLINT ignore "Use zipWith" #-}
 import Data.List (sort, group, nub, subsequences)
 import System.Random ( randomRIO )
 import System.Exit (exitSuccess)
@@ -641,8 +635,8 @@ and their respective strategies. -}
 main :: IO()
 main = do
     let initPlayers = [Player "Shams" [] 1000 RandomPlayer False False, 
-            Player "Aayush" [] 1000 RandomPlayer False False, 
-            Player "Devraj" [] 1000 RandomPlayer False False, 
+            Player "Aayush" [] 1000 AggressivePlayer False False, 
+            Player "Devraj" [] 1000 PassivePlayer False False, 
             Player "Rishi" [] 1000 RandomPlayer False False]
             
     let initialState = GameState {
